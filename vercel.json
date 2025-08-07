@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "buildCommand": "npm run build",
   "functions": {
     "api/index.js": {
       "maxDuration": 30
@@ -12,8 +13,8 @@
     },
     {
       "src": "/(.*)",
-      "dest": "/dist/$1"
+      "dest": "/dist/public/$1"
     }
   ],
-  "outputDirectory": "dist"
+  "outputDirectory": "dist/public"
 }
