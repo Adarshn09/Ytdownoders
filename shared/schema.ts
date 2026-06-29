@@ -22,7 +22,7 @@ export const downloadRequestSchema = z.object({
 });
 
 export const downloadProgressSchema = z.object({
-  progress: z.number().min(0).max(100),
+  progress: z.number().min(-1).max(100), // -1 signals a server-side error
   downloadedSize: z.string(),
   totalSize: z.string(),
   speed: z.string(),

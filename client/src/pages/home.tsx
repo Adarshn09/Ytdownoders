@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState, useRef } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { VideoInfo, DownloadRequest } from "@shared/schema";
+import { VideoInfo } from "@shared/schema";
 import { Youtube, Download, Search, Shield, Zap, Video, Smartphone, FileText, BarChart3, Check, AlertTriangle, RotateCcw, X, ExternalLink, Plus } from "lucide-react";
 import SEOHead from "@/components/SEOHead";
 import SEOContent from "@/components/SEOContent";
@@ -15,7 +15,6 @@ import SEOContent from "@/components/SEOContent";
 // Capacitor imports (will be available when running as mobile app)
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
-import { Share } from '@capacitor/share';
 
 export default function Home() {
   const [videoUrl, setVideoUrl] = useState("");
@@ -26,9 +25,9 @@ export default function Home() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadComplete, setDownloadComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [downloadSessionId, setDownloadSessionId] = useState<string | null>(null);
-  const [downloadStats, setDownloadStats] = useState({ downloadedSize: "0MB", totalSize: "0MB", speed: "0 MB/s", eta: "0s" });
-  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [downloadStats, setDownloadStats] = useState({ downloadedSize: "0 MB", totalSize: "Unknown", speed: "0 MB/s", eta: "Calculating..." });
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
   
   const { toast } = useToast();
 
@@ -60,138 +59,6 @@ export default function Home() {
     },
   });
 
-  // Mobile download function for Capacitor
-  const handleMobileDownload = async (sessionId: string) => {
-    try {
-      const params = new URLSearchParams({
-        url: videoUrl,
-        quality: selectedQuality,
-        format: selectedFormat,
-        sessionId: sessionId
-      });
-      
-      const downloadUrl = `/api/download?${params.toString()}`;
-      const response = await fetch(downloadUrl);
-      const blob = await response.blob();
-      
-      // Convert blob to base64 for Capacitor filesystem
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64Data = (reader.result as string).split(',')[1];
-        const fileName = `video_${Date.now()}.${selectedFormat}`;
-        
-        try {
-          await Filesystem.writeFile({
-            path: fileName,
-            data: base64Data,
-            directory: Directory.Documents,
-          });
-          
-          toast({
-            title: "Download completed!",
-            description: `Video saved to Documents/${fileName}`,
-          });
-        } catch (error) {
-          console.error('File save error:', error);
-          toast({
-            variant: "destructive",
-            title: "Save failed",
-            description: "Could not save video to device storage.",
-          });
-        }
-      };
-      reader.readAsDataURL(blob);
-      
-    } catch (error) {
-      console.error('Mobile download error:', error);
-      toast({
-        variant: "destructive",
-        title: "Download failed",
-        description: "Could not download video on mobile device.",
-      });
-    }
-  };
-
-  // Progress tracking function
-  const trackDownloadProgress = async (sessionId: string) => {
-    try {
-      const response = await fetch(`/api/progress/${sessionId}`);
-      if (response.ok) {
-        const progress = await response.json();
-        setDownloadProgress(progress.progress);
-        setDownloadStats({
-          downloadedSize: progress.downloadedSize,
-          totalSize: progress.totalSize,
-          speed: progress.speed,
-          eta: progress.eta
-        });
-        
-        if (progress.progress >= 100) {
-          setIsDownloading(false);
-          setDownloadComplete(true);
-          if (progressIntervalRef.current) {
-            clearInterval(progressIntervalRef.current);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Progress tracking error:', error);
-    }
-  };
-
-  const downloadMutation = useMutation({
-    mutationFn: async (data: DownloadRequest) => {
-      // Start download and get session ID
-      const response = await apiRequest("POST", "/api/start-download", data);
-      const result = await response.json();
-      return result;
-    },
-    onSuccess: (result) => {
-      setDownloadSessionId(result.sessionId);
-      
-      // Start progress tracking
-      progressIntervalRef.current = setInterval(() => {
-        trackDownloadProgress(result.sessionId);
-      }, 500);
-      
-      // Handle download differently for mobile vs web
-      if (Capacitor.isNativePlatform()) {
-        // Mobile app download using Capacitor
-        handleMobileDownload(result.sessionId);
-      } else {
-        // Web browser download
-        const params = new URLSearchParams({
-          url: videoUrl,
-          quality: selectedQuality,
-          format: selectedFormat,
-          sessionId: result.sessionId
-        });
-        
-        const downloadUrl = `/api/download?${params.toString()}`;
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = '';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      }
-      
-      toast({
-        title: "Download started!",
-        description: "Your video download has begun with progress tracking.",
-      });
-    },
-    onError: (error: any) => {
-      setIsDownloading(false);
-      setError(error.message || "Download failed");
-      toast({
-        variant: "destructive",
-        title: "Download failed",
-        description: "Please try again with different settings.",
-      });
-    },
-  });
-
   const handleAnalyze = () => {
     if (!videoUrl || !isValidYouTubeUrl(videoUrl)) {
       setError("Please enter a valid YouTube URL");
@@ -200,7 +67,25 @@ export default function Home() {
     analyzeMutation.mutate(videoUrl);
   };
 
-  const handleDownload = () => {
+  /** Stop polling without resetting download state */
+  const stopPolling = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  };
+
+  /**
+   * 3-step download flow:
+   * 1. POST /api/start-download  → server spawns yt-dlp to a temp file, returns sessionId
+   * 2. Poll /api/progress/:id   → update the progress bar from real yt-dlp output
+   * 3. /api/download-file/:id   → when status='ready', trigger the browser file save
+   *
+   * This fixes both issues:
+   *  - No audio: yt-dlp merges video+audio to a temp file before we stream it
+   *  - Progress bar: real yt-dlp % from stderr, and Content-Length from the merged file
+   */
+  const handleDownload = async () => {
     if (!videoInfo || !selectedQuality) {
       toast({
         variant: "destructive",
@@ -210,18 +95,96 @@ export default function Home() {
       return;
     }
 
+    stopPolling();
+    sessionIdRef.current = null;
+
     setIsDownloading(true);
+    setDownloadComplete(false);
+    setError(null);
     setDownloadProgress(0);
-    
-    // Start the real download
-    downloadMutation.mutate({
-      url: videoUrl,
-      quality: selectedQuality,
-      format: selectedFormat,
-    });
+    setDownloadStats({ downloadedSize: "0 MB", totalSize: "Unknown", speed: "0 MB/s", eta: "Preparing..." });
+
+    try {
+      // Step 1: Start server-side download
+      const startRes = await fetch("/api/start-download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: videoUrl, quality: selectedQuality, format: selectedFormat }),
+      });
+
+      if (!startRes.ok) {
+        const body = await startRes.json().catch(() => ({}));
+        throw new Error(body.message || `Server error ${startRes.status}`);
+      }
+
+      const { sessionId, filename } = await startRes.json();
+      sessionIdRef.current = sessionId;
+
+      // Step 2: Poll for progress
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const progRes = await fetch(`/api/progress/${sessionId}?t=${Date.now()}`, {
+            cache: "no-store",
+          });
+          if (!progRes.ok) return;
+          const data = await progRes.json();
+
+          setDownloadProgress(data.progress ?? 0);
+          setDownloadStats({
+            downloadedSize: data.downloadedSize ?? "0 MB",
+            totalSize: data.totalSize ?? "Unknown",
+            speed: data.status === "merging" ? "Merging..." : (data.speed ?? "0 MB/s"),
+            eta: data.status === "merging" ? "Almost done" : (data.eta ?? "Calculating..."),
+          });
+
+          if (data.status === "ready") {
+            stopPolling();
+            setDownloadProgress(100);
+
+            // Step 3: Trigger the file download (server streams the merged temp file)
+            const link = document.createElement("a");
+            link.href = `/api/download-file/${sessionId}`;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            setDownloadStats(prev => ({ ...prev, speed: "0 MB/s", eta: "Done" }));
+            setIsDownloading(false);
+            setDownloadComplete(true);
+            toast({ title: "Download complete!", description: `Saved as ${filename}` });
+
+          } else if (data.status === "error") {
+            stopPolling();
+            throw new Error(data.error || "Download failed on server");
+          }
+        } catch (pollErr: any) {
+          stopPolling();
+          setIsDownloading(false);
+          setError(pollErr.message || "Download failed");
+          toast({
+            variant: "destructive",
+            title: "Download failed",
+            description: pollErr.message || "Please try again.",
+          });
+        }
+      }, 800);
+
+    } catch (err: any) {
+      stopPolling();
+      setIsDownloading(false);
+      setError(err.message || "Download failed. Please try again.");
+      toast({
+        variant: "destructive",
+        title: "Download failed",
+        description: err.message || "Please try again with different settings.",
+      });
+    }
   };
 
   const handleReset = () => {
+    stopPolling();
+    sessionIdRef.current = null;
     setVideoUrl("");
     setVideoInfo(null);
     setSelectedQuality("");
@@ -230,11 +193,7 @@ export default function Home() {
     setIsDownloading(false);
     setDownloadComplete(false);
     setError(null);
-    setDownloadSessionId(null);
-    setDownloadStats({ downloadedSize: "0MB", totalSize: "0MB", speed: "0 MB/s", eta: "0s" });
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
+    setDownloadStats({ downloadedSize: "0 MB", totalSize: "Unknown", speed: "0 MB/s", eta: "Calculating..." });
   };
 
   return (
