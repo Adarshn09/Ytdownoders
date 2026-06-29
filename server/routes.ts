@@ -247,17 +247,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const formatStr = fmtSelector(quality, ext);
       console.log(`[start-download] sid=${sessionId} quality=${quality} fmt=${formatStr}`);
 
-      // Add ffmpegDir to PATH in spawn options so yt-dlp can find ffmpeg.exe
-      const ffmpegDir = ffmpegStatic ? path.dirname(ffmpegStatic) : "";
+      // Add ffmpegDir to PATH so yt-dlp can find ffmpeg
+      const ffmpegDir = ffmpegStatic ? path.dirname(String(ffmpegStatic)) : "";
       const env = { ...process.env };
       if (ffmpegDir) {
-        if (env.PATH) {
-          env.PATH = `${ffmpegDir};${env.PATH}`;
-        } else if (env.Path) {
-          env.Path = `${ffmpegDir};${env.Path}`;
-        } else {
-          env.PATH = ffmpegDir;
-        }
+        // Use the correct path separator for the OS
+        const sep = process.platform === "win32" ? ";" : ":";
+        const pathKey = Object.keys(env).find(k => k.toLowerCase() === "path") || "PATH";
+        env[pathKey] = `${ffmpegDir}${sep}${env[pathKey] || ""}`;
       }
 
       // Spawn yt-dlp — downloads to temp file, merges video+audio properly
