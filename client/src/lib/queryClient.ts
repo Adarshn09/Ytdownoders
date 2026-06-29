@@ -7,15 +7,11 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
-// Get the API base URL for mobile environments
+// Always use relative URLs — works in dev (Vite proxies to Express),
+// works in production (same host serves frontend + API).
+// For mobile Capacitor builds only, override with VITE_API_URL env var.
 const getApiBaseUrl = () => {
-  // In development, use localhost
-  if (import.meta.env.DEV) {
-    return '';
-  }
-  
-  // In mobile app, use environment variable or default to localhost
-  return import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  return import.meta.env.VITE_API_URL || '';
 };
 
 export async function apiRequest(
