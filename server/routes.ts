@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { spawn } from "child_process";
-import { createReadStream, unlink, statSync } from "fs";
+import { createReadStream, unlink, statSync, writeFileSync } from "fs";
 import { mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
@@ -16,6 +16,25 @@ import ffmpegStatic from "ffmpeg-static";
 import readline from "readline";
 
 const YT_DLP_BIN: string = ytdlConstants.YOUTUBE_DL_PATH;
+
+// ─── Cookie support ───────────────────────────────────────────────────────────
+// If YOUTUBE_COOKIES env var is set (Netscape cookie format), write it to a
+// temp file so yt-dlp can use it for authenticated requests.
+let cookiesFile: string | null = null;
+if (process.env.YOUTUBE_COOKIES) {
+  try {
+    cookiesFile = path.join(tmpdir(), "yt-cookies.txt");
+    writeFileSync(cookiesFile, process.env.YOUTUBE_COOKIES, "utf8");
+    console.log("[cookies] Loaded YOUTUBE_COOKIES from env");
+  } catch (e) {
+    console.warn("[cookies] Failed to write cookie file:", e);
+    cookiesFile = null;
+  }
+}
+
+// Use iOS player client by default — bypasses YouTube bot-detection on server IPs.
+// Falls back to: mweb → web_creator → web
+const YT_EXTRACTOR_ARGS = "youtube:player_client=ios,mweb,web_creator,web";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -131,7 +150,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         noCheckCertificates: true,
         noWarnings: true,
         noPlaylist: true,
-        addHeader: ["referer:youtube.com", "user-agent:Mozilla/5.0"],
+        extractorArgs: YT_EXTRACTOR_ARGS,
+        ...(cookiesFile ? { cookies: cookiesFile } : {}),
+        addHeader: [
+          "referer:youtube.com",
+          "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        ],
       });
 
       const seenLabels = new Set<string>();
@@ -216,6 +240,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           noCheckCertificates: true,
           noWarnings: true,
           noPlaylist: true,
+          extractorArgs: YT_EXTRACTOR_ARGS,
+          ...(cookiesFile ? { cookies: cookiesFile } : {}),
         });
         safeTitle = String(meta.title ?? safeTitle)
           .replace(/[^a-zA-Z0-9\s]/g, "_")
@@ -258,7 +284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Spawn yt-dlp — downloads to temp file, merges video+audio properly
-      const proc = spawn(YT_DLP_BIN, [
+      const spawnArgs = [
         url,
         "-o", tempFile,
         "-f", formatStr,
@@ -266,11 +292,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         "--no-warnings",
         "--no-playlist",
         "--merge-output-format", ext,
-        "--progress",          // Force showing progress output even when piped
-        "--newline",           // Print progress on separate lines
+        "--progress",
+        "--newline",
+        "--extractor-args", YT_EXTRACTOR_ARGS,
         "--add-header", "referer:youtube.com",
-        "--add-header", "user-agent:Mozilla/5.0",
-      ], { 
+        "--add-header", "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        ...(cookiesFile ? ["--cookies", cookiesFile] : []),
+      ];
+      const proc = spawn(YT_DLP_BIN, spawnArgs, { 
         stdio: ["ignore", "pipe", "pipe"],
         env
       });
