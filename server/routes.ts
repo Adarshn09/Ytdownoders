@@ -32,13 +32,20 @@ if (process.env.YOUTUBE_COOKIES) {
   }
 }
 
-// Player clients tried in order for bot-detection bypass.
-// We try ONE at a time (not comma-separated) to avoid yt-dlp merging
-// conflicting format lists which causes "format not available" on --dump-single-json.
-const PLAYER_CLIENTS = ["ios", "android", "mweb", "web"];
+// Player clients tried in order. tv_embedded and web_creator use YouTube's
+// embedded/Studio APIs which have much lighter bot-detection on datacenter IPs.
+// We try ONE at a time to avoid yt-dlp merging conflicting format lists.
+const PLAYER_CLIENTS = [
+  "tv_embedded",    // YouTube TV embedded — lightest bot check, works on many server IPs
+  "web_creator",    // YouTube Studio API — also relatively permissive
+  "mweb",           // Mobile web — sometimes works
+  "ios",            // iOS app client
+  "android",        // Android app client
+  "web",            // Standard web — most restricted on server IPs
+];
 
-// For spawned downloads: single client (ios) with android as fallback
-const YT_EXTRACTOR_ARGS = "youtube:player_client=ios";
+// For spawned downloads use tv_embedded first
+const YT_EXTRACTOR_ARGS = "youtube:player_client=tv_embedded";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -178,8 +185,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
               "--no-warnings",
               "--no-playlist",
               "--extractor-args", `youtube:player_client=${client}`,
+              // Don't abort if yt-dlp can't fully validate format list;
+              // we only need the metadata, not format selection.
+              "--ignore-no-formats-error",
               "--add-header", "referer:youtube.com",
-              "--add-header", `user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15`,
+              "--add-header", "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
               ...(cookiesFile ? ["--cookies", cookiesFile] : []),
             ];
             const proc = spawn(YT_DLP_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -346,6 +356,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Spawn yt-dlp — downloads to temp file, merges video+audio properly
+      // Use tv_embedded first (lightest bot check), then fall through other clients.
+      // For downloads, yt-dlp handles the client list to pick the first that works.
+      const dlExtractorArgs = "youtube:player_client=tv_embedded,web_creator,mweb,ios,android,web";
       const spawnArgs = [
         url,
         "-o", tempFile,
@@ -356,7 +369,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         "--merge-output-format", ext,
         "--progress",
         "--newline",
-        "--extractor-args", YT_EXTRACTOR_ARGS,
+        "--extractor-args", dlExtractorArgs,
         "--add-header", "referer:youtube.com",
         "--add-header", "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
         ...(cookiesFile ? ["--cookies", cookiesFile] : []),
