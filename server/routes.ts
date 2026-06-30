@@ -32,9 +32,9 @@ if (process.env.YOUTUBE_COOKIES) {
   }
 }
 
-// Use iOS player client by default — bypasses YouTube bot-detection on server IPs.
-// Falls back to: mweb → web_creator → web
-const YT_EXTRACTOR_ARGS = "youtube:player_client=ios,mweb,web_creator,web";
+// Use iOS player client — bypasses YouTube bot-detection on server IPs.
+// Tried in order: ios → android → mweb → web
+const YT_EXTRACTOR_ARGS = "youtube:player_client=ios,android,mweb,web";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,20 +96,34 @@ function heightLabel(h: number): string {
   return "144p";
 }
 
-function fmtSelector(quality: string, ext: string): string {
+/**
+ * Build a yt-dlp format selector for the requested quality.
+ *
+ * Rules:
+ * - Never constrain by ext — iOS/Android/mweb clients offer different
+ *   codec sets and forcing [ext=mp4] causes "Requested format is not available".
+ * - Always end with /best so there is a universal fallback.
+ * - Use --merge-output-format at the CLI level to remux into mp4/webm.
+ */
+function fmtSelector(quality: string): string {
   const heightMap: Record<string, number> = {
     "4320p60": 4320, "2160p60": 2160, "1440p": 1440, "1080p": 1080,
     "720p": 720, "480p": 480, "360p": 360, "240p": 240, "144p": 144,
   };
   const h = heightMap[quality];
   if (!h) {
-    return ext === "webm"
-      ? "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best"
-      : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+    // Unknown quality label — grab absolute best
+    return "bestvideo+bestaudio/best";
   }
-  return ext === "webm"
-    ? `bestvideo[height<=${h}][ext=webm]+bestaudio[ext=webm]/best[height<=${h}]`
-    : `bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${h}]+bestaudio/best[height<=${h}][ext=mp4]/best[height<=${h}]/best`;
+  // Prefer separate video+audio streams (will be merged by ffmpeg),
+  // fall back to a combined stream, then to anything available.
+  return (
+    `bestvideo[height<=${h}]+bestaudio/` +
+    `bestvideo[height<=${h}]+bestaudio[abr>0]/` +
+    `best[height<=${h}]/` +
+    `bestvideo+bestaudio/` +
+    `best`
+  );
 }
 
 /**
@@ -270,7 +284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
       sessions.set(sessionId, session);
 
-      const formatStr = fmtSelector(quality, ext);
+      const formatStr = fmtSelector(quality);
       console.log(`[start-download] sid=${sessionId} quality=${quality} fmt=${formatStr}`);
 
       // Add ffmpegDir to PATH so yt-dlp can find ffmpeg
