@@ -186,9 +186,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
               "--no-warnings",
               "--no-playlist",
               "--extractor-args", `youtube:player_client=${client}`,
-              // Don't abort if yt-dlp can't fully validate format list;
-              // we only need the metadata, not format selection.
-              "--ignore-no-formats-error",
               "--add-header", "referer:youtube.com",
               "--add-header", "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
               ...(cookiesFile ? ["--cookies", cookiesFile] : []),
@@ -200,7 +197,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
             proc.on("exit", (code) => {
               if (code === 0 && stdout.trim()) {
-                try { resolve(JSON.parse(stdout)); }
+                try {
+                  const parsed = JSON.parse(stdout);
+                  if (!parsed.formats || parsed.formats.length === 0) {
+                    reject(new Error("No formats returned"));
+                  } else {
+                    resolve(parsed);
+                  }
+                }
                 catch (e) { reject(new Error(`JSON parse failed: ${e}`)); }
               } else {
                 reject(new Error(stderr.trim() || `exit code ${code}`));
