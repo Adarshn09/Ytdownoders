@@ -32,9 +32,13 @@ if (process.env.YOUTUBE_COOKIES) {
   }
 }
 
-// Use iOS player client — bypasses YouTube bot-detection on server IPs.
-// Tried in order: ios → android → mweb → web
-const YT_EXTRACTOR_ARGS = "youtube:player_client=ios,android,mweb,web";
+// Player clients tried in order for bot-detection bypass.
+// We try ONE at a time (not comma-separated) to avoid yt-dlp merging
+// conflicting format lists which causes "format not available" on --dump-single-json.
+const PLAYER_CLIENTS = ["ios", "android", "mweb", "web"];
+
+// For spawned downloads: single client (ios) with android as fallback
+const YT_EXTRACTOR_ARGS = "youtube:player_client=ios";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -159,18 +163,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const cached = await storage.getVideoInfo(url);
       if (cached) return res.json(cached);
 
-      const info: any = await youtubedl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        noPlaylist: true,
-        extractorArgs: YT_EXTRACTOR_ARGS,
-        ...(cookiesFile ? { cookies: cookiesFile } : {}),
-        addHeader: [
-          "referer:youtube.com",
-          "user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        ],
-      });
+      // Try each player client in order until one succeeds.
+      // Using spawn directly gives exact control over args and avoids
+      // quoting issues in the JS wrapper.
+      let info: any = null;
+      let lastErr = "";
+      for (const client of PLAYER_CLIENTS) {
+        try {
+          info = await new Promise<any>((resolve, reject) => {
+            const args = [
+              url,
+              "--dump-single-json",
+              "--no-check-certificates",
+              "--no-warnings",
+              "--no-playlist",
+              "--extractor-args", `youtube:player_client=${client}`,
+              "--add-header", "referer:youtube.com",
+              "--add-header", `user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15`,
+              ...(cookiesFile ? ["--cookies", cookiesFile] : []),
+            ];
+            const proc = spawn(YT_DLP_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+            let stdout = "";
+            let stderr = "";
+            proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+            proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+            proc.on("exit", (code) => {
+              if (code === 0 && stdout.trim()) {
+                try { resolve(JSON.parse(stdout)); }
+                catch (e) { reject(new Error(`JSON parse failed: ${e}`)); }
+              } else {
+                reject(new Error(stderr.trim() || `exit code ${code}`));
+              }
+            });
+            proc.on("error", reject);
+          });
+          console.log(`[analyze] success with client=${client}`);
+          break; // got info — stop trying
+        } catch (err: any) {
+          lastErr = err?.message ?? String(err);
+          console.warn(`[analyze] client=${client} failed: ${lastErr.slice(0, 120)}`);
+        }
+      }
+      if (!info) throw new Error(lastErr || "All player clients failed");
 
       const seenLabels = new Set<string>();
       const qualities: { quality: string; format: string; fileSize: string }[] = [];
@@ -249,19 +283,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Derive a safe filename from the title
       let safeTitle = `video_${sessionId.slice(0, 8)}`;
       try {
-        const meta: any = await youtubedl(url, {
-          dumpSingleJson: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          noPlaylist: true,
-          extractorArgs: YT_EXTRACTOR_ARGS,
-          ...(cookiesFile ? { cookies: cookiesFile } : {}),
-        });
-        safeTitle = String(meta.title ?? safeTitle)
-          .replace(/[^a-zA-Z0-9\s]/g, "_")
-          .replace(/\s+/g, "_")
-          .slice(0, 200);
-      } catch { /* keep fallback */ }
+        // Use spawn directly (one client at a time) to get the title
+        for (const client of PLAYER_CLIENTS) {
+          try {
+            const titleJson = await new Promise<string>((resolve, reject) => {
+              const proc = spawn(YT_DLP_BIN, [
+                url,
+                "--dump-single-json",
+                "--no-check-certificates",
+                "--no-warnings",
+                "--no-playlist",
+                "--extractor-args", `youtube:player_client=${client}`,
+                ...(cookiesFile ? ["--cookies", cookiesFile] : []),
+              ], { stdio: ["ignore", "pipe", "pipe"] });
+              let out = "";
+              proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+              proc.on("exit", (code) => code === 0 ? resolve(out) : reject());
+              proc.on("error", reject);
+            });
+            const meta = JSON.parse(titleJson);
+            safeTitle = String(meta.title ?? safeTitle)
+              .replace(/[^a-zA-Z0-9\s]/g, "_")
+              .replace(/\s+/g, "_")
+              .slice(0, 200);
+            break;
+          } catch { /* try next client */ }
+        }
+      } catch { /* keep fallback title */ }
 
       // Create a temp directory + output path
       const tmpDir = await mkdtemp(path.join(tmpdir(), "ytdl-"));
