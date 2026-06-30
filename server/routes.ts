@@ -32,20 +32,21 @@ if (process.env.YOUTUBE_COOKIES) {
   }
 }
 
-// Player clients tried in order. tv_embedded and web_creator use YouTube's
-// embedded/Studio APIs which have much lighter bot-detection on datacenter IPs.
+// Player clients tried in order. tv_embedded, web_safari, and web_creator use YouTube's
+// embedded/Safari/Studio APIs which have much lighter bot-detection on datacenter IPs.
 // We try ONE at a time to avoid yt-dlp merging conflicting format lists.
 const PLAYER_CLIENTS = [
-  "tv_embedded",    // YouTube TV embedded — lightest bot check, works on many server IPs
-  "web_creator",    // YouTube Studio API — also relatively permissive
-  "mweb",           // Mobile web — sometimes works
+  "web_safari",     // Safari web client (recommended workaround)
+  "tv_embedded",    // YouTube TV embedded — lightest bot check
+  "web_creator",    // YouTube Studio API
+  "mweb",           // Mobile web
   "ios",            // iOS app client
   "android",        // Android app client
-  "web",            // Standard web — most restricted on server IPs
+  "web",            // Standard web
 ];
 
-// For spawned downloads use tv_embedded first
-const YT_EXTRACTOR_ARGS = "youtube:player_client=tv_embedded";
+// For spawned downloads use web_safari/tv_embedded first
+const YT_EXTRACTOR_ARGS = "youtube:player_client=web_safari";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -356,9 +357,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Spawn yt-dlp — downloads to temp file, merges video+audio properly
-      // Use tv_embedded first (lightest bot check), then fall through other clients.
+      // Use web_safari first (lightest bot check), then fall through other clients.
       // For downloads, yt-dlp handles the client list to pick the first that works.
-      const dlExtractorArgs = "youtube:player_client=tv_embedded,web_creator,mweb,ios,android,web";
+      const dlExtractorArgs = "youtube:player_client=web_safari,tv_embedded,web_creator,mweb,ios,android,web";
       const spawnArgs = [
         url,
         "-o", tempFile,
